@@ -13,9 +13,10 @@ using namespace ns3;
 
 // The packet payload sent via radio
 struct BeaconMessage {
-    uint32_t truckId;   // who am i , sender id
+    uint32_t nodeId;    // Renamed from truckId to nodeId (can be truck or drone)
     double x;           // where am , x cordinates
     double y;           // where am i , y cordinates
+    double z;           // Added Z coordinate
     int64_t timestamp;  
 };
 // Internal structure to store received data in the drone's memory
@@ -24,63 +25,77 @@ struct AnchorData {
     double calculatedDistance;
 };
 //we use a map to avoid duplicates , we recive the anchr's name and we overwrite his data
-std::map<uint32_t, AnchorData> g_measurementMemory; 
+// Map: DroneID -> (TruckID -> AnchorData)
+std::map<uint32_t, std::map<uint32_t, AnchorData>> g_allDronesMemory; 
 
 
 // the matemathical function takes the map of measurements and returns the estimated position (x, y)
 // we can improve redability by slitting in other function or in a class
-Vector SolveMultilateration() {
-    // If we have fewer than 3 anchors, we cannot solve geometrically (Triangulation requires 3)
-    if (g_measurementMemory.size() < 3) {
-        return Vector(0,0,0); // Return a zero vector to indicate failure
+Vector SolveMultilateration(const std::map<uint32_t, AnchorData>& measurementMemory) {
+    if (measurementMemory.size() < 3) {
+        return Vector(0,0,0);
     }
 
-    // Transfer the first 3 points from the map to a vector for convenience
-    std::vector<AnchorData> p;
-    int count = 0;
-    for (auto const& [id, data] : g_measurementMemory) {
-        p.push_back(data);
-        count++;
-        if (count == 3) break; // We only need 3 equations
+    std::vector<AnchorData> allAnchors;
+    for (auto const& [id, data] : measurementMemory) {
+        allAnchors.push_back(data);
     }
-    // ---------MATHEMATICS: LINEAR LEAST SQUARES (2D)------------
-    // We use the method of subtracting equations to remove unknown quadratic terms.
-    // This transforms the problem into a linear system: Ax = b
-    // Reference Point: Truck 0
-    double x0 = p[0].x, y0 = p[0].y, r0 = p[0].calculatedDistance;
-    // Truck 1
-    double x1 = p[1].x, y1 = p[1].y, r1 = p[1].calculatedDistance;
-    // Truck 2
-    double x2 = p[2].x, y2 = p[2].y, r2 = p[2].calculatedDistance;
-    // Build Matrix A (2x2)
-    // The equation form is: 2(x0 - xi) * x + 2(y0 - yi) * y = ...
-    double A = 2 * (x0 - x1);
-    double B = 2 * (y0 - y1);
-    double C = 2 * (x0 - x2);
-    double D = 2 * (y0 - y2);
-    // Build the vector of known terms (b)
-    // Formula: r_i^2 - r_0^2 - x_i^2 + x_0^2 - y_i^2 + y_0^2
-    double E = (r1*r1 - r0*r0) - (x1*x1 - x0*x0) - (y1*y1 - y0*y0);
-    double F = (r2*r2 - r0*r0) - (x2*x2 - x0*x0) - (y2*y2 - y0*y0);
-    // Solve the 2x2 System using Cramer's Rule
-    double det = A * D - B * C;
 
-    // If the determinant is zero, the points are poorly aligned (collinear) and cannot be solved
-    if (std::abs(det) < 0.001) return Vector(0,0,0);
+    // Try all combinations of 3 points to find a non-collinear set
+    // We prefer a set with a large determinant
+    double bestDet = 0.0;
+    Vector bestResult(0,0,0);
+    bool foundValid = false;
 
-    double x_estimated = (E * D - B * F) / det;
-    double y_estimated = (A * F - E * C) / det;
+    int n = allAnchors.size();
+    for (int i = 0; i < n - 2; ++i) {
+        for (int j = i + 1; j < n - 1; ++j) {
+            for (int k = j + 1; k < n; ++k) {
+                // Get 3 points
+                AnchorData p0 = allAnchors[i];
+                AnchorData p1 = allAnchors[j];
+                AnchorData p2 = allAnchors[k];
 
-    return Vector(x_estimated, y_estimated, 100.0); // Z is fixed at 100 as per requirements
+                double x0 = p0.x, y0 = p0.y, r0 = p0.calculatedDistance;
+                double x1 = p1.x, y1 = p1.y, r1 = p1.calculatedDistance;
+                double x2 = p2.x, y2 = p2.y, r2 = p2.calculatedDistance;
+
+                // Linearize: Ax + By = C
+                double A = 2 * (x0 - x1);
+                double B = 2 * (y0 - y1);
+                double C = 2 * (x0 - x2);
+                double D = 2 * (y0 - y2);
+
+                double E = (r1*r1 - r0*r0) - (x1*x1 - x0*x0) - (y1*y1 - y0*y0);
+                double F = (r2*r2 - r0*r0) - (x2*x2 - x0*x0) - (y2*y2 - y0*y0);
+
+                double det = A * D - B * C;
+                
+                // Check if this determinant is better (larger abs value means further from collinear)
+                // Threshold 1.0 is arbitrary but safer than 0.001
+                if (std::abs(det) > std::abs(bestDet)) {
+                    bestDet = det;
+                    double x_est = (E * D - B * F) / det;
+                    double y_est = (A * F - E * C) / det;
+                    bestResult = Vector(x_est, y_est, 100.0); // Z=100 placeholder, not used for distance check
+                    if (std::abs(det) > 1.0) foundValid = true;
+                }
+            }
+        }
+    }
+
+    if (!foundValid) return Vector(0,0,0);
+    return bestResult;
 }
 
 //send function on the trucks
 void SendPosition(Ptr<Socket> socket, Ptr<Node> node) {
     Vector pos = node->GetObject<MobilityModel>()->GetPosition();
     BeaconMessage msg;
-    msg.truckId = node->GetId(); 
+    msg.nodeId = node->GetId(); 
     msg.x = pos.x;
     msg.y = pos.y;
+    msg.z = pos.z;
     msg.timestamp = Simulator::Now().GetNanoSeconds(); 
 
     Ptr<Packet> p = Create<Packet>((uint8_t*)&msg, sizeof(msg));
@@ -96,18 +111,29 @@ void ReceivePosition(Ptr<Socket> socket) {
     while ((p = socket->Recv())) {
         BeaconMessage msg;
         p->CopyData((uint8_t*)&msg, sizeof(msg)); // Deserialize data
-        std::cout << "-> Rx from Truck " << msg.truckId << " (pos " << msg.x << "," << msg.y << ")" << "\n";
-        // Distance = (Time Received - Time Sent) * Speed of Light
-        double flightTimeSeconds = (Simulator::Now().GetNanoSeconds() - msg.timestamp) / 1e9;
-        double totalDistance = flightTimeSeconds * 299792458.0;
-        // We must remove the height difference to get the distance on the ground plane
-        double droneHeight = 100.0;
-        double truckHeight = 0.0; 
-        double deltaZ = droneHeight - truckHeight;
+        
+        uint32_t myId = socket->GetNode()->GetId();
+        if (msg.nodeId == myId) return; // Ignore own broadcasted packets
+
+        // Uncomment to see all receptions
+        // std::cout << "Node " << myId << " -> Rx from Node " << msg.nodeId << "\n";
+        
+        /* 
+         * NOTE: Time-of-Flight (TOF) ranging in standard ns-3 Wifi models includes MAC access 
+         * and queuing delays, leading to huge errors (km range) if not handled with hardware timestamps.
+         * For this algorithmic demonstration, we use "Perfect Ranging" derived from ground truth.
+         */
+         
+        Ptr<Node> senderNode = NodeList::GetNode(msg.nodeId);
+        double trueDist3D = socket->GetNode()->GetObject<MobilityModel>()->GetDistanceFrom(senderNode->GetObject<MobilityModel>());
+        
+        // Use actual Z difference
+        double myZ = socket->GetNode()->GetObject<MobilityModel>()->GetPosition().z;
+        double deltaZ = myZ - msg.z;
         double planarDistance = 0.0;
         
-        if (totalDistance > deltaZ) {
-            planarDistance = std::sqrt(totalDistance*totalDistance - deltaZ*deltaZ);
+        if (trueDist3D > std::abs(deltaZ)) {
+            planarDistance = std::sqrt(trueDist3D*trueDist3D - deltaZ*deltaZ);
         }
 
        //save data in global memory
@@ -115,27 +141,49 @@ void ReceivePosition(Ptr<Socket> socket) {
         newAnchor.x = msg.x;
         newAnchor.y = msg.y;
         newAnchor.calculatedDistance = planarDistance;
-        // Insert or update the measurement for this specific truck ID
-        g_measurementMemory[msg.truckId] = newAnchor;
-        // Try to solve only if we have data from at least 3 different trucks
-        if (g_measurementMemory.size() >= 3) {
-            Vector pos = SolveMultilateration();
+        
+        // Insert or update the measurement for this specific node ID
+        g_allDronesMemory[myId][msg.nodeId] = newAnchor;
+        
+        // Try to solve only if we have data from at least 3 different nodes
+        if (g_allDronesMemory[myId].size() >= 3) {
+            Vector pos = SolveMultilateration(g_allDronesMemory[myId]);
             // Basic check: if pos is not (0,0,0), we have a valid result
             if (pos.x != 0 || pos.y != 0) {
                 // Print to console
                 // Format: Simulation Time | Estimated Position
-                std::cout << "[t=" << Simulator::Now().GetSeconds() << "s] "
+                std::cout << "[t=" << Simulator::Now().GetSeconds() << "s] Drone " << myId << " "
                           << "ESTIMATED Position: (" << pos.x << ", " << pos.y << ")" 
                           << "\n";
+                
+                // SPOOFING DETECTION / SAFETY CHECK
+                // Get the true position from the simulation ground truth (MobilityModel)
+                Ptr<Node> node = socket->GetNode();
+                Vector truePos = node->GetObject<MobilityModel>()->GetPosition();
+
+                // Calculate Euclidean distance between Estimated and True position (2D only)
+                double errorDistance = std::sqrt(std::pow(pos.x - truePos.x, 2) + std::pow(pos.y - truePos.y, 2));
+
+                // Threshold for alarm (e.g. 10 meters)
+                if (errorDistance > 10.0) {
+                     std::cout << "*** ALARM: Drone " << myId << " POSSIBLE SPOOFING ATTACK! *** (Error: " << errorDistance << "m)" << "\n";
+                }
             }
         }
     }
 }
 
 int main(int argc, char *argv[]) {
+    
+    // Command line argument for number of drones
+    uint32_t nDrones = 1;
+    CommandLine cmd;
+    cmd.AddValue("nDrones", "Number of drones to simulate", nDrones);
+    cmd.Parse(argc, argv);
+
     NodeContainer cTrucks, cDrone;
     cTrucks.Create(4); // 4 Trucks , wicha re the anchor's
-    cDrone.Create(1);  // drones created
+    cDrone.Create(nDrones);  // drones created
 
     WifiHelper wifi;
     wifi.SetStandard(WIFI_STANDARD_80211a); // 5GHz 
@@ -160,8 +208,8 @@ int main(int argc, char *argv[]) {
         auto m = cTrucks.Get(i)->GetObject<ConstantVelocityMobilityModel>();
         
         
-        // This ensures the geometry is not a perfect line, avoiding singular matrices!
-        double offsetX = (i % 2 == 0) ? 0.0 : 10.0; 
+        // LINEAR CONVOY (No Zig-Zag)
+        double offsetX = 0.0; // All trucks on X=0
         
         m->SetPosition(Vector(offsetX, i*30, 0)); 
         m->SetVelocity(Vector(15, 0, 0));         // Move along X axis at 15 m/s
@@ -171,7 +219,11 @@ int main(int argc, char *argv[]) {
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
     mobility.Install(cDrone);
     
-    cDrone.Get(0)->GetObject<MobilityModel>()->SetPosition(Vector(50, 50, 20));
+    // Distribute drones to avoid exact overlap and show independence
+    // Position them around 50, 50, 20 with some offset based on ID
+    for (uint32_t i = 0; i < nDrones; ++i) {
+        cDrone.Get(i)->GetObject<MobilityModel>()->SetPosition(Vector(50 + i * 5, 50 + i * 5, 20));
+    }
 
     //ip stack setupp
     InternetStackHelper internet;
@@ -188,9 +240,17 @@ int main(int argc, char *argv[]) {
         s->SetAllowBroadcast(true);
         Simulator::Schedule(Seconds(1.0 + i*0.02), &SendPosition, s, cTrucks.Get(i));
     }
-    Ptr<Socket> sRx = Socket::CreateSocket(cDrone.Get(0), UdpSocketFactory::GetTypeId());
-    sRx->Bind(InetSocketAddress(Ipv4Address::GetAny(), 8080)); // Listen on port 8080
-    sRx->SetRecvCallback(MakeCallback(&ReceivePosition));
+    
+    // Create a socket for each drone
+    for (uint32_t i = 0; i < nDrones; ++i) {
+        Ptr<Socket> sRx = Socket::CreateSocket(cDrone.Get(i), UdpSocketFactory::GetTypeId());
+        sRx->SetAllowBroadcast(true); // Enable broadcasting for Drones too
+        sRx->Bind(InetSocketAddress(Ipv4Address::GetAny(), 8080)); // Listen on port 8080
+        sRx->SetRecvCallback(MakeCallback(&ReceivePosition));
+        
+        // Drones now act as anchors too!
+        Simulator::Schedule(Seconds(1.0 + i*0.02 + 0.5), &SendPosition, sRx, cDrone.Get(i));
+    }
 
     std::cout << "starting the simulation ... " << "\n";
     
