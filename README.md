@@ -1,15 +1,15 @@
-# UAV-attack-simulation
-# 🚁 Drone Multilateration over Ad-Hoc WiFi — ns-3 Simulation
+
+#  Drone Multilateration over Ad-Hoc WiFi — ns-3 Simulation
 
 A network simulator (ns-3) project that demonstrates **real-time drone position estimation** using multilateration over an ad-hoc WiFi network. Drones estimate their own 2D position by receiving beacon messages from anchor nodes (trucks, other drones, or both) and solving a system of distance equations.
 
-## 📌 Overview
+##  Overview
 
 A convoy of trucks moves linearly along the X axis. One or more drones fly nearby at a configurable altitude and velocity. Each anchor node periodically broadcasts its known position via UDP over 802.11a (5 GHz). Drones collect these beacons, compute planar distances (compensating for altitude via 3D→2D projection), and apply **multilateration** to estimate their own position.
 
 The simulation compares estimated positions against ground truth and reports accuracy metrics, including automatic **spoofing detection** when the estimation error exceeds a threshold.
 
-## ✨ Features
+##  Features
 
 - **Hybrid anchor system** — trucks, drones, or both can act as anchors (`--anchorMode`)
 - **2-anchor mode** — circle intersection fallback when only 2 anchors are available
@@ -20,7 +20,7 @@ The simulation compares estimated positions against ground truth and reports acc
 - **Batch testing** — `run_all_tests.sh` runs all parameter combinations and exports results to CSV
 - **Fully configurable** — number of drones, trucks, speeds, and anchor mode via command-line arguments
 
-## 🛠 Requirements
+##  Requirements
 
 - [ns-3.46](https://www.nsnam.org/) (Network Simulator 3)
 - C++17 compiler (GCC 9+ recommended)
@@ -45,7 +45,7 @@ chmod +x run_all_tests.sh
 ./run_all_tests.sh
 ```
 
-## ⚙️ Command-Line Parameters
+##  Command-Line Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -60,7 +60,7 @@ chmod +x run_all_tests.sh
 | `--truckSpeed` | 5.0 | Truck convoy speed along X (m/s) |
 | `--anchorMode` | hybrid | Anchor mode: `trucks`, `drones`, or `hybrid` |
 
-## 📊 Anchor Modes
+##  Anchor Modes
 
 | Mode | Who sends beacons | Min. nodes needed |
 |---|---|---|
