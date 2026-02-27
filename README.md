@@ -80,16 +80,4 @@ SIMULATION RESULTS
   Average error:      5.91 m
 ========================================
 ```
-
-## 📂 Project Structure
-
-```
-├── scratch/
-│   └── DronesFinal.cc      # Main simulation source code
-├── run_all_tests.sh         # Batch runner for all parameter combinations
-└── README.md
-```
-
-## 📝 License
-
-This project is for academic and research purposes.
+this project is for academic purposes 
